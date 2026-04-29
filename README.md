@@ -14,7 +14,7 @@
 - **지점 간 분석 (Point-to-point):** 출발지와 도착지가 모두 특정 지점인 경우
 - **지점-경계 분석 (Point-to-boundary):** 도착지가 군현 경계 폴리곤인 경우 (예: 사방경계 기록)
 
-이 외에도 순위 분석, 편차범위 분석, 경로 간·레이어 간 길이 가중 유사도 분석을 포함하여 경로의 추정 신뢰도와 성격을 정량적으로 평가합니다.
+이에 더하여 순위 분석, 편차범위 분석, 경로 간·레이어 간 길이 가중 유사도 분석을 통해 경로의 추정 신뢰도와 성격을 정량적으로 평가할 수 있습니다.
 
 This repository implements a GIS-based path analysis model that searches a network for routes most closely matching distances recorded in historical sources. By transforming the objective function from cost minimization (`min f`) to target approximation (`min |f − T|`), recorded values themselves become inputs for the path search.
 
@@ -103,7 +103,7 @@ python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl
 | 순위 분석 (상위 N) | `경로분석_point_point_순위.py` | `경로분석_point_polygon_순위.py` |
 | 편차범위 분석 (±margin) | `경로분석_point_point_편차범위.py` | `경로분석_point_polygon_편차범위.py` |
 
-각 스크립트는 실행 시점에 분석 유형(거리/시간), 장애물 적용 여부 등을 대화식으로 선택합니다.
+각 스크립트는 실행 시 분석 유형(거리/시간)과 장애물 적용 여부 등을 사용자가 선택합니다.
 
 ### 3단계: 유사도 분석 (`03_similarity/`)
 
@@ -116,7 +116,7 @@ python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl
 | `경로_간_유사도_분석_편차범위.py` | 편차범위 분석 GPKG | 유사도 CSV + 필터 GPKG |
 | `레이어_간_경로_구성_비교.py` | 두 개의 경로 GPKG | 요약 CSV + 매칭 CSV |
 
-상세한 알고리즘 명세와 입출력 구조는 [`docs/운영_지침.md`](docs/운영_지침.md)를 참조하십시오.
+분석 모델의 구체적 절차와 출력 구조는 docs/운영_지침.md를 참조하십시오.
 
 ---
 
