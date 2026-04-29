@@ -25,7 +25,7 @@ This repository implements a GIS-based path analysis model that searches a netwo
 > 양정현 (예정). 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
 > — 조선시대 경기 광주의 사례를 중심으로. *(학술지명)*.
 >
-> Yang, J. (예정). Design and Application of a Target-Approximating
+> Yang, J. (forthcoming). Design and Application of a Target-Approximating
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
 > during the Joseon Dynasty. *(Journal name)*.
 
@@ -116,7 +116,7 @@ python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl
 | `경로_간_유사도_분석_편차범위.py` | 편차범위 분석 GPKG | 유사도 CSV + 필터 GPKG |
 | `레이어_간_경로_구성_비교.py` | 두 개의 경로 GPKG | 요약 CSV + 매칭 CSV |
 
-분석 모델의 구체적 절차와 출력 구조는 docs/운영_지침.md를 참조하십시오.
+분석 모델의 구체적 절차와 출력 구조는 [docs/운영_지침.md](docs/운영_지침.md)를 참조하십시오.
 
 ---
 
