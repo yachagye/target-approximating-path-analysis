@@ -1,7 +1,7 @@
 # Target-Approximating Path Analysis for Historical GIS
 
-조선시대 경기 광주의 사례를 중심으로 한 역사 GIS 경로 분석 모델
-**Target-approximating path analysis model for Historical GIS — A case study of Gwangju in Gyeonggi during the Joseon Dynasty**
+역사 GIS를 위한 목표값 근접 경로 분석 모델
+**Target-approximating path analysis model for Historical GIS**
 
 ---
 
@@ -22,10 +22,10 @@ This repository implements a GIS-based path analysis model that searches a netwo
 
 ## 인용 (Citation)
 
-> 양정현 (). 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
-> — 조선시대 경기 광주의 사례를 중심으로. *(투고 학술지명)*.
+> 양정현 (예정). 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
+> — 조선시대 경기 광주의 사례를 중심으로. *(학술지명)*.
 >
-> Yang, J. (). Design and Application of a Target-Approximating
+> Yang, J. (예정). Design and Application of a Target-Approximating
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
 > during the Joseon Dynasty. *(Journal name)*.
 
