@@ -29,7 +29,7 @@ This repository implements a GIS-based path analysis model that searches a netwo
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
 > during the Joseon Dynasty. *(Journal name)*.
 
-*※ 게재 후 권·호·페이지·DOI를 갱신할 예정*
+*※ 권·호·페이지·DOI 추후 갱신 예정*
 
 ---
 
