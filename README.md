@@ -7,9 +7,9 @@
 
 ## 개요 (Overview)
 
-본 저장소는 사료에 기재된 거리에 가장 부합하는 경로를 네트워크 위에서 직접 탐색하는 GIS 경로 분석 모델의 구현체입니다. 기존 최소 비용 경로(Least-Cost Path) 분석의 목적 함수를 비용 최소화 `min f`에서 목표값 근접 `min |f − T|`로 전환하여, 사료에 기록된 거리값 자체가 경로 탐색의 입력이 되도록 설계되었습니다.
+본 저장소는 사료에 기재된 거리에 가장 부합하는 경로를 네트워크 위에서 직접 탐색하는 GIS 경로 분석 모델의 분석 스크립트를 배포합니다. 기존 최소 비용 경로(Least-Cost Path) 분석의 목적 함수를 비용 최소화 `min f`에서 목표값 근접 `min |f − T|`로 전환하여, 사료에 기록된 거리값 자체가 경로 탐색의 입력이 되도록 설계되었습니다.
 
-분석은 사료 기록의 형식에 따라 다음 두 유형으로 분기됩니다.
+분석은 사료 기록의 형식에 따라 다음 두 유형으로 구분됩니다.
 
 - **지점 간 분석 (Point-to-point):** 출발지와 도착지가 모두 특정 지점인 경우
 - **지점-경계 분석 (Point-to-boundary):** 도착지가 군현 경계 폴리곤인 경우 (예: 사방경계 기록)
@@ -22,14 +22,14 @@ This repository implements a GIS-based path analysis model that searches a netwo
 
 ## 인용 (Citation)
 
-> 양정현 (게재 예정). 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
+> 양정현 (). 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
 > — 조선시대 경기 광주의 사례를 중심으로. *(투고 학술지명)*.
 >
-> Yang, J. (forthcoming). Design and Application of a Target-Approximating
+> Yang, J. (). Design and Application of a Target-Approximating
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
 > during the Joseon Dynasty. *(Journal name)*.
 
-*※ 게재 확정 후 권·호·페이지·DOI를 갱신할 예정*
+*※ 게재 후 권·호·페이지·DOI를 갱신할 예정*
 
 ---
 
