@@ -648,11 +648,18 @@ def shortest_path_leg(G, src_node, dst_node, weight_attr):
 
 
 def k_shortest_leg_candidates(G, src_node, dst_node, weight_attr, target_value):
-    """단일 leg용 후보 생성. K_INIT/K_MAX 구조 유지."""
+    """단일 leg용 후보 생성.
+
+    종료 조건:
+      (a) metric >= target_value인 후보가 등장하면 그 후보까지 포함하고 종료
+      (b) K_INIT까지 (a)가 발생하지 않으면 K_MAX까지 확장
+      (c) K_MAX 도달 시 종료
+    K-shortest는 비용 오름차순이므로 (a) 이후 |metric - target_value| 단조 증가,
+    따라서 (a) 시점 종료에도 |비용 - 목표값| 최소 후보 선택의 정확성이 보존된다.
+    """
     candidates = []
     gen = nx.shortest_simple_paths(G, source=src_node, target=dst_node, weight=weight_attr)
 
-    reached_over_target = False
     limit = K_INIT
     t0 = time.time()
 
@@ -670,16 +677,15 @@ def k_shortest_leg_candidates(G, src_node, dst_node, weight_attr, target_value):
             elapsed = time.time() - t0
             print(f"    [k_shortest] k={k}, metric={metric:.4f}, target={target_value:.4f}, elapsed={elapsed:.1f}s")
 
+        # (a) 목표값 이상 후보 등장 시 즉시 종료 (K_INIT/K_MAX 단계 무관)
         if metric >= target_value:
-            reached_over_target = True
+            break
 
+        # (b) K_INIT 도달 시 K_MAX로 확장, K_MAX 도달 시 종료
         if k >= limit:
-            if reached_over_target or limit >= K_MAX:
+            if limit >= K_MAX:
                 break
             limit = K_MAX
-
-        if k >= K_MAX:
-            break
 
     elapsed = time.time() - t0
     print(f"    [k_shortest] 완료: k={len(candidates)}, elapsed={elapsed:.1f}s")
