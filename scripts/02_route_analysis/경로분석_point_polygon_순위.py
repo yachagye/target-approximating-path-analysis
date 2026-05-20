@@ -619,36 +619,6 @@ def find_boundary_destination_nodes(poly, edges_gdf, G):
                         boundary_restores.append(restore)
                         dest_nodes.append(split_node)
 
-        elif (not u_in) and (not v_in):
-            # (F, F) 관통 케이스: 양 끝 모두 폴리곤 외부이나 chain 중간이 폴리곤 내부를 관통
-            # geom.intersects(boundary) True가 이미 확인되었으므로 경계 교차는 보장됨
-            # 분기 없는 축약 간선이 폴리곤을 가로지를 때 발생
-            if not G.has_edge(u, v):
-                continue
-
-            edge_data = G[u][v]
-            chain = edge_data.get("chain_nodes")
-
-            # 비축약 간선의 관통은 구조적으로 거의 발생하지 않으며,
-            # 그래프 노드 수준에서 진입점을 정의할 수 없으므로 처리 불가
-            if chain is None or len(chain) <= 2:
-                continue
-
-            # chain 중간에서 첫 번째 외부→내부 전이점 탐색 (양 끝 u, v 제외)
-            first_inside_idx = None
-            for ci in range(1, len(chain) - 1):
-                if _inside_or_boundary(poly, chain[ci]):
-                    first_inside_idx = ci
-                    break
-
-            if first_inside_idx is not None:
-                split_node = chain[first_inside_idx]
-                if split_node not in seen:
-                    seen.add(split_node)
-                    restore = _split_edge_at_chain_idx(G, u, v, first_inside_idx)
-                    boundary_restores.append(restore)
-                    dest_nodes.append(split_node)
-
     return dest_nodes, boundary_restores
 
 
@@ -821,6 +791,8 @@ def _top_n_via_waypoints(G, snapped_nodes, dest_nodes, weight_attr, target_value
             worst_diff = -top_heap[0][0] if len(top_heap) >= top_n else float("inf")
             if cf + min_l - target_value >= worst_diff:
                 break
+            if len(top_heap) >= top_n and worst_diff < 1e-4:
+                break
 
             remainder = target_value - cf
             pos = _bisect.bisect_left(lm, remainder)
@@ -941,6 +913,8 @@ def _top_n_via_waypoints(G, snapped_nodes, dest_nodes, weight_attr, target_value
                     f"    [heap] combos={combos_processed}, heap_size={len(combo_heap)}, top={len(top_heap)}/{top_n}, c_front={c_front:.4f}, worst_diff={worst_diff:.4f}, elapsed={elapsed:.1f}s")
 
             if c_front + min_l - target_value >= worst_diff:
+                break
+            if len(top_heap) >= top_n and worst_diff < 1e-4:
                 break
 
             remainder = target_value - c_front
