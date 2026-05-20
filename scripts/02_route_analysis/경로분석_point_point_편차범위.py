@@ -705,6 +705,9 @@ def _top_n_two_legs_margin(G, legs, weight_attr, target_value, margin, top_n, mi
         # 즉시 종료: 최소 합산이 범위 상한 초과
         if ci + min_b > t_hi:
             break
+        worst_diff = -top_heap[0][0] if len(top_heap) >= top_n else float("inf")
+        if len(top_heap) >= top_n and worst_diff < 1e-4:
+            break
 
         # bisect 위치 기준 양방향 확장 — margin 범위 내만 수집
         remainder = target_value - ci
@@ -829,6 +832,9 @@ def _top_n_three_plus_legs_margin(G, legs, weight_attr, target_value, margin, to
 
         # 즉시 종료: 최소 합산이 범위 상한 초과
         if c_front + min_last > t_hi:
+            break
+        worst_diff = -top_heap[0][0] if len(top_heap) >= top_n else float("inf")
+        if len(top_heap) >= top_n and worst_diff < 1e-4:
             break
 
         # bisect 위치 기준 양방향 확장 — margin 범위 내만 수집
