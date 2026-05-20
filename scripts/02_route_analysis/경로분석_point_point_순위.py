@@ -693,6 +693,8 @@ def _top_n_two_legs(G, legs, weight_attr, target_value, top_n, min_metrics, t_j_
         worst_diff = -top_heap[0][0] if len(top_heap) >= top_n else float("inf")
         if ci + min_b - target_value >= worst_diff:
             break
+        if len(top_heap) >= top_n and worst_diff < 1e-4:
+            break
 
         # bisect 위치 기준 양방향 확장
         remainder = target_value - ci
@@ -807,6 +809,8 @@ def _top_n_three_plus_legs(G, legs, weight_attr, target_value, top_n, t_j_caps):
                 f"    [heap] combos={combos_processed}, heap_size={len(combo_heap)}, top={len(top_heap)}/{top_n}, c_front={c_front:.4f}, worst_diff={worst_diff:.4f}, elapsed={elapsed:.1f}s")
 
         if c_front + min_last - target_value >= worst_diff:
+            break
+        if len(top_heap) >= top_n and worst_diff < 1e-4:
             break
 
         # bisect 위치 기준 양방향 확장
