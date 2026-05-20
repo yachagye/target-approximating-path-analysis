@@ -606,8 +606,48 @@ def choose_target_top_n(G, snapped_nodes, weight_attr, target_value, top_n=TOP_N
 
 
 def _top_n_single_leg(G, src, dst, weight_attr, target_value, top_n):
-    """단일 구간: T_j(=target_value) 상한 기반 후보 수집 → |metric-T| 정렬 → 상위 top_n 반환."""
-    cands = collect_leg_candidates_with_cap(G, src, dst, weight_attr, target_value)
+    """단일 구간: K-shortest 오름차순 열거 + TOP_N max-heap 기반 worst_diff 조기 종료.
+
+    K-shortest 단조성에 의해 metric ≥ T 구간에서 abs_diff = metric - T로 단조 증가.
+    TOP_N이 채워졌고 metric ≥ T이며 metric - T ≥ worst_diff이면 이후 후보는 모두 개선 불가 → 종료.
+    worst_diff < 1e-4도 동일 원리로 종료.
+    """
+    cands = []
+    diff_heap = []  # max-heap of -abs_diff
+    gen = nx.shortest_simple_paths(G, source=src, target=dst, weight=weight_attr)
+    total_generated = 0
+    t0 = time.time()
+
+    for path_nodes in gen:
+        costs = accumulate_costs(G, path_nodes)
+        metric = path_metric(costs, weight_attr)
+        total_generated += 1
+
+        if total_generated % 1000 == 0:
+            elapsed = time.time() - t0
+            worst = -diff_heap[0] if len(diff_heap) >= top_n else float("inf")
+            print(f"    [cap_collect] k={total_generated}, metric={metric:.4f}, T={target_value:.4f}, worst_diff={worst:.4f}, elapsed={elapsed:.1f}s")
+
+        cands.append({"nodes": path_nodes, "costs": costs, "metric": metric})
+        diff = abs(metric - target_value)
+        if len(diff_heap) < top_n:
+            heapq.heappush(diff_heap, -diff)
+        elif diff < -diff_heap[0]:
+            heapq.heapreplace(diff_heap, -diff)
+
+        if len(diff_heap) >= top_n and metric >= target_value:
+            worst_diff = -diff_heap[0]
+            if metric - target_value >= worst_diff:
+                break
+            if worst_diff < 1e-4:
+                break
+
+        if total_generated >= K_MAX:
+            break
+
+    elapsed = time.time() - t0
+    print(f"    [cap_collect] 완료: k={total_generated}, elapsed={elapsed:.1f}s")
+
     if not cands:
         return []
 
