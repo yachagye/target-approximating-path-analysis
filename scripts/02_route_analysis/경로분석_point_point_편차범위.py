@@ -593,6 +593,8 @@ def _top_n_single_leg(G, src, dst, weight_attr, target_value, margin, top_n):
 
     t0 = time.time()
 
+    diff_heap = []  # max-heap of -abs_diff
+
     for path_nodes in gen:
         costs = accumulate_costs(G, path_nodes)
         metric = path_metric(costs, weight_attr)
@@ -600,13 +602,27 @@ def _top_n_single_leg(G, src, dst, weight_attr, target_value, margin, top_n):
 
         if total_generated % 1000 == 0:
             elapsed = time.time() - t0
-            print(f"    [single_leg] k={total_generated}, metric={metric:.4f}, in_range={len(in_range)}, t_hi={t_hi:.4f}, elapsed={elapsed:.1f}s")
+            worst = -diff_heap[0] if len(diff_heap) >= top_n else float("inf")
+            print(
+                f"    [single_leg] k={total_generated}, metric={metric:.4f}, in_range={len(in_range)}, worst_diff={worst:.4f}, t_hi={t_hi:.4f}, elapsed={elapsed:.1f}s")
 
         if metric > t_hi:
             break
 
         if metric >= t_lo:
             in_range.append({"nodes": path_nodes, "costs": costs, "metric": metric})
+            diff = abs(metric - target_value)
+            if len(diff_heap) < top_n:
+                heapq.heappush(diff_heap, -diff)
+            elif diff < -diff_heap[0]:
+                heapq.heapreplace(diff_heap, -diff)
+
+        if len(diff_heap) >= top_n and metric >= target_value:
+            worst_diff = -diff_heap[0]
+            if metric - target_value >= worst_diff:
+                break
+            if worst_diff < 1e-4:
+                break
 
         if total_generated >= K_MAX:
             break
