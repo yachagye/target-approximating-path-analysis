@@ -5,11 +5,12 @@
 #  2) 경로 분석.csv
 #       route_id, x1, y1, x2, y2, ..., xN, yN, target_km 또는 target_hr
 #     - 좌표: EPSG:4326 (경도 x, 위도 y)
+#     - target 셀이 비어 있으면 해당 경로는 route_min_*만 산출(route_target 생략)
 #  3) 선택 입력: 장애물 GPKG
 #     - line 또는 polygon만 지원
 #     - 장애물은 완전 차단(교차 간선 제거)
 #
-# route_target 알고리즘:
+# route_target 알고리즘 (target 입력 경로 대상):
 #  - 단일 구간(경유지 없음): K_INIT/K_MAX 2단계 후보 생성 후 |비용-목표값| 최소 선택
 #  - 2-leg(경유지 1개): T_j 작은 leg bisect(사전 생성) + 큰 leg lazy iterate (heap 불필요)
 #  - 3-leg 이상: T_j 사전 생성 후 앞쪽 legs min-heap + 마지막 leg bisect
@@ -21,7 +22,7 @@
 #     layer: route_min_hr_tob
 #     layer: route_min_kcal_ks
 #     layer: route_min_kcal_tob
-#     layer: route_target
+#     layer: route_target  (target 입력 경로만 등록. route_min_* 레이어의 abs_diff·target_km/hr은 target 미입력 시 NULL)
 
 import os
 import csv
@@ -266,7 +267,7 @@ def parse_routes_csv(csv_path, mode):
 
                 route_id = str(row[0]).strip()
                 target_str = str(row[-1]).strip()
-                if route_id == "" or target_str == "":
+                if route_id == "":
                     continue
 
                 coords = []
@@ -283,7 +284,7 @@ def parse_routes_csv(csv_path, mode):
                 out.append({
                     "route_id": route_id,
                     "coords": coords,
-                    "target": float(target_str),
+                    "target": float(target_str) if target_str != "" else None,
                 })
         return out
 
@@ -985,7 +986,7 @@ def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, 
         "route_id": route_id,
         "weight_attr": weight_attr,
         "metric_val": float(result["metric"]),
-        "abs_diff": float(abs(target_metric - target_value)),
+        "abs_diff": float(abs(target_metric - target_value)) if target_value is not None else None,
         "length_km": float(costs["length_km"]),
         "hour_ks": float(costs["hour_ks"]),
         "hour_tob": float(costs["hour_tob"]),
@@ -1001,9 +1002,9 @@ def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, 
         rec["candidate_n"] = int(candidate_n)
 
     if mode == "km":
-        rec["target_km"] = float(target_value)
+        rec["target_km"] = float(target_value) if target_value is not None else None
     else:
-        rec["target_hr"] = float(target_value)
+        rec["target_hr"] = float(target_value) if target_value is not None else None
 
     return rec
 
@@ -1106,11 +1107,12 @@ def main():
         total = len(routes)
         for i, row in enumerate(routes, start=1):
             route_id = row["route_id"]
-            target_value = float(row["target"])
+            target_value = row["target"]  # None 가능 (target 미입력 시)
             coords_wgs84 = row["coords"]
 
             t_route_start = time.time()
-            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_value}, coords={len(coords_wgs84)}개)")
+            target_display = f"{target_value}" if target_value is not None else "미입력"
+            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_display}, coords={len(coords_wgs84)}개)")
 
             snapped_nodes = []
             snap_dists = []
@@ -1134,23 +1136,27 @@ def main():
 
             print(f"  snap_m: {[f'{d:.1f}' for d in snap_dists]}")
 
-            try:
-                target_result = choose_target_route(
-                    G=G_work,
-                    snapped_nodes=snapped_nodes,
-                    weight_attr=target_weight_attr,
-                    target_value=target_value,
-                )
-            except nx.NetworkXNoPath:
+            if target_value is None:
                 target_result = None
-            except nx.NodeNotFound:
-                target_result = None
+                print(f"  [target] target 미입력, route_min만 산출")
+            else:
+                try:
+                    target_result = choose_target_route(
+                        G=G_work,
+                        snapped_nodes=snapped_nodes,
+                        weight_attr=target_weight_attr,
+                        target_value=target_value,
+                    )
+                except nx.NetworkXNoPath:
+                    target_result = None
+                except nx.NodeNotFound:
+                    target_result = None
 
-            if target_result is None:
-                if restore_infos:
-                    restore_splits(G_work, restore_infos)
-                print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
-                continue
+                if target_result is None:
+                    if restore_infos:
+                        restore_splits(G_work, restore_infos)
+                    print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
+                    continue
 
             for min_weight_attr, layer_name in MIN_WEIGHT_CONFIGS:
                 try:
@@ -1180,19 +1186,20 @@ def main():
                 )
                 feats_min_map[layer_name].append(rec_min)
 
-            rec_target = build_record(
-                route_id=route_id,
-                weight_attr=target_weight_attr,
-                target_weight_attr=target_weight_attr,
-                target_value=target_value,
-                mode=mode,
-                result=target_result,
-                snap_start=snap_dists[0],
-                snap_end=snap_dists[-1],
-                G=G_work,
-                candidate_n=target_result["candidate_n"],
-            )
-            feats_target.append(rec_target)
+            if target_result is not None:
+                rec_target = build_record(
+                    route_id=route_id,
+                    weight_attr=target_weight_attr,
+                    target_weight_attr=target_weight_attr,
+                    target_value=target_value,
+                    mode=mode,
+                    result=target_result,
+                    snap_start=snap_dists[0],
+                    snap_end=snap_dists[-1],
+                    G=G_work,
+                    candidate_n=target_result["candidate_n"],
+                )
+                feats_target.append(rec_target)
 
             # 임시 노드 복원
             if restore_infos:
