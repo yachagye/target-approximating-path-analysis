@@ -10,6 +10,7 @@
 #     - 이후 유효한 점들: 경유지(있을 수도 있고 없을 수도 있음)
 #     - 빈 좌표쌍은 무시
 #     - route_id 중복 금지
+#     - target 셀이 비어 있으면 해당 경로는 route_min_*만 산출(route_target 생략)
 #  3) 목적 폴리곤.gpkg
 #     - 폴리곤 레이어
 #     - route_id 필드 포함 (출발 CSV와 매칭)
@@ -17,7 +18,7 @@
 #     - line 또는 polygon만 지원
 #     - 장애물은 완전 차단(교차 간선 제거)
 #
-# route_target 규칙:
+# route_target 규칙 (target 입력 경로 대상):
 #  - 유효 좌표가 1개(x1, y1만 존재)인 경우:
 #      출발점 -> 폴리곤 후보 목적 노드별 최단경로 중 |비용 - target| 최소 선택
 #  - 유효 좌표가 2개 이상(경유지 존재)인 경우:
@@ -26,7 +27,7 @@
 #      앞쪽 leg가 1개(2-leg): front leg lazy iterate + polygon leg bisect
 #      앞쪽 leg가 2개 이상(3-leg+): front legs T_j 사전 생성 + min-heap + polygon leg bisect
 #
-# route_min_* 규칙:
+# route_min_* 규칙 (모든 경로 대상):
 #  - 유효 좌표가 1개인 경우:
 #      출발점 -> 폴리곤 후보 목적 노드들 중 해당 임피던스 최소 경로 선택
 #  - 유효 좌표가 2개 이상인 경우:
@@ -40,7 +41,7 @@
 #     layer: route_min_hr_tob
 #     layer: route_min_kcal_ks
 #     layer: route_min_kcal_tob
-#     layer: route_target
+#     layer: route_target  (target 입력 경로만 등록. route_min_* 레이어의 abs_diff·target_km/hr·target_val은 target 미입력 시 NULL)
 
 import os
 import csv
@@ -362,7 +363,7 @@ def parse_routes_csv(csv_path, mode):
 
                 route_id = str(row[0]).strip()
                 target_str = str(row[-1]).strip()
-                if route_id == "" or target_str == "":
+                if route_id == "":
                     continue
 
                 coords = []
@@ -379,7 +380,7 @@ def parse_routes_csv(csv_path, mode):
                 out.append({
                     "route_id": route_id,
                     "coords": coords,
-                    "target": float(target_str),
+                    "target": float(target_str) if target_str != "" else None,
                 })
 
         return out
@@ -1240,9 +1241,9 @@ def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, 
     rec = {
         "route_id": route_id,
         "weight_attr": weight_attr,
-        "target_val": float(target_value),
+        "target_val": float(target_value) if target_value is not None else None,
         "metric_val": float(result["metric"]),
-        "abs_diff": float(abs(target_metric - target_value)),
+        "abs_diff": float(abs(target_metric - target_value)) if target_value is not None else None,
         "length_km": float(costs["length_km"]),
         "hour_ks": float(costs["hour_ks"]),
         "hour_tob": float(costs["hour_tob"]),
@@ -1259,9 +1260,9 @@ def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, 
     }
 
     if mode == "km":
-        rec["target_km"] = float(target_value)
+        rec["target_km"] = float(target_value) if target_value is not None else None
     else:
-        rec["target_hr"] = float(target_value)
+        rec["target_hr"] = float(target_value) if target_value is not None else None
 
     return rec
 
@@ -1377,12 +1378,13 @@ def main():
         total = len(routes)
         for i, row in enumerate(routes, start=1):
             route_id = row["route_id"]
-            target_value = float(row["target"])
+            target_value = row["target"]  # None 가능 (target 미입력 시)
             coords_wgs84 = row["coords"]
             poly = poly_map[route_id]
 
             t_route_start = time.time()
-            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_value}, coords={len(coords_wgs84)}개)")
+            target_display = f"{target_value}" if target_value is not None else "미입력"
+            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_display}, coords={len(coords_wgs84)}개)")
 
             snapped_nodes = []
             snap_dists = []
@@ -1417,35 +1419,39 @@ def main():
 
             print(f"  dest_nodes: {len(dest_nodes)}")
 
-            if len(snapped_nodes) == 1:
-                route_target = choose_best_direct_to_polygon(
-                    G=G_work,
-                    src_node=snapped_nodes[0],
-                    dest_nodes=dest_nodes,
-                    weight_attr=target_weight_attr,
-                    target_value=target_value,
-                )
+            if target_value is None:
+                route_target = None
+                print(f"  [target] target 미입력, route_min만 산출")
             else:
-                try:
-                    route_target = choose_target_route_via_waypoints(
+                if len(snapped_nodes) == 1:
+                    route_target = choose_best_direct_to_polygon(
                         G=G_work,
-                        snapped_nodes=snapped_nodes,
+                        src_node=snapped_nodes[0],
                         dest_nodes=dest_nodes,
                         weight_attr=target_weight_attr,
                         target_value=target_value,
                     )
-                except nx.NetworkXNoPath:
-                    route_target = None
-                except nx.NodeNotFound:
-                    route_target = None
+                else:
+                    try:
+                        route_target = choose_target_route_via_waypoints(
+                            G=G_work,
+                            snapped_nodes=snapped_nodes,
+                            dest_nodes=dest_nodes,
+                            weight_attr=target_weight_attr,
+                            target_value=target_value,
+                        )
+                    except nx.NetworkXNoPath:
+                        route_target = None
+                    except nx.NodeNotFound:
+                        route_target = None
 
-            if route_target is None:
-                if boundary_restores:
-                    restore_splits(G_work, boundary_restores)
-                if restore_infos:
-                    restore_splits(G_work, restore_infos)
-                print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
-                continue
+                if route_target is None:
+                    if boundary_restores:
+                        restore_splits(G_work, boundary_restores)
+                    if restore_infos:
+                        restore_splits(G_work, restore_infos)
+                    print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
+                    continue
 
             for min_weight_attr, layer_name in MIN_WEIGHT_CONFIGS:
                 if len(snapped_nodes) == 1:
@@ -1486,19 +1492,20 @@ def main():
                 )
                 feats_min_map[layer_name].append(rec_min)
 
-            rec_target = build_record(
-                route_id=route_id,
-                weight_attr=target_weight_attr,
-                target_weight_attr=target_weight_attr,
-                target_value=target_value,
-                mode=mode,
-                result=route_target,
-                snap_start=snap_dists[0],
-                snap_last=snap_dists[-1],
-                coord_n=len(snapped_nodes),
-                G=G_work,
-            )
-            feats_target.append(rec_target)
+            if route_target is not None:
+                rec_target = build_record(
+                    route_id=route_id,
+                    weight_attr=target_weight_attr,
+                    target_weight_attr=target_weight_attr,
+                    target_value=target_value,
+                    mode=mode,
+                    result=route_target,
+                    snap_start=snap_dists[0],
+                    snap_last=snap_dists[-1],
+                    coord_n=len(snapped_nodes),
+                    G=G_work,
+                )
+                feats_target.append(rec_target)
 
             # 임시 노드 복원
             if boundary_restores:
