@@ -619,13 +619,72 @@ def find_boundary_destination_nodes(poly, edges_gdf, G):
                         boundary_restores.append(restore)
                         dest_nodes.append(split_node)
 
+        elif (not u_in) and (not v_in):
+            # (F, F) 관통 케이스: 양 끝 모두 폴리곤 외부이나 chain 중간이 폴리곤 내부를 관통
+            # geom.intersects(boundary) True가 이미 확인되었으므로 경계 교차는 보장됨
+            # 분기 없는 축약 간선이 폴리곤을 가로지를 때 발생
+            if not G.has_edge(u, v):
+                continue
+
+            edge_data = G[u][v]
+            chain = edge_data.get("chain_nodes")
+
+            # 비축약 간선의 관통은 구조적으로 거의 발생하지 않으며,
+            # 그래프 노드 수준에서 진입점을 정의할 수 없으므로 처리 불가
+            if chain is None or len(chain) <= 2:
+                continue
+
+            # chain 중간에서 첫 번째 외부→내부 전이점 탐색 (양 끝 u, v 제외)
+            first_inside_idx = None
+            for ci in range(1, len(chain) - 1):
+                if _inside_or_boundary(poly, chain[ci]):
+                    first_inside_idx = ci
+                    break
+
+            if first_inside_idx is not None:
+                split_node = chain[first_inside_idx]
+                if split_node not in seen:
+                    seen.add(split_node)
+                    restore = _split_edge_at_chain_idx(G, u, v, first_inside_idx)
+                    boundary_restores.append(restore)
+                    dest_nodes.append(split_node)
+
     return dest_nodes, boundary_restores
 
 
-def _passes_other_dest(path_nodes, dest_nodes_set):
-    """경로가 최종 목적지 이전에 다른 경계 후보 노드를 통과하는지 검사."""
-    final = path_nodes[-1]
-    return any(n in dest_nodes_set and n != final for n in path_nodes[:-1])
+def collect_clean_dest_candidates(G, src_node, target_dests, all_dest_set, weight_attr):
+    """모든 dest_node를 가린 읽기 전용 뷰(core)로 폴리곤 내부를 봉인한 뒤 src에서 단일 Dijkstra.
+    각 목적지 후보는 폴리곤에 '처음 진입'하는 깨끗한 최단경로로 복원한다.
+    (다른 dest_node 경유 = 폴리곤 선진입 → core 봉인으로 자동 배제되며,
+     분할로 생성된 A의 외부측 진입 간선은 비용·geometry 메타데이터를 보유하므로
+     accumulate_costs가 정확히 누적한다. A의 내부측 이웃은 core에서 도달 불가(∞)가 되어
+     별도 판정 없이 자동 제외된다.)
+    반환: {dst_node: {nodes, costs, metric, dst_node}} (깨끗한 진입 경로가 없는 후보는 제외)"""
+    core = nx.restricted_view(G, all_dest_set - {src_node}, [])
+    dist, paths = nx.single_source_dijkstra(core, src_node, weight=weight_attr)
+
+    out = {}
+    for A in target_dests:
+        if A == src_node:
+            continue
+        best = None
+        for u in G.predecessors(A):
+            if u in dist:
+                c = dist[u] + float(G[u][A][weight_attr])
+                if best is None or c < best[0]:
+                    best = (c, u)
+        if best is None:
+            continue
+        upred = best[1]
+        nodes = paths[upred] + [A]
+        costs = accumulate_costs(G, nodes)
+        out[A] = {
+            "nodes": nodes,
+            "costs": costs,
+            "metric": path_metric(costs, weight_attr),
+            "dst_node": A,
+        }
+    return out
 
 
 def shortest_path_leg(G, src_node, dst_node, weight_attr):
@@ -653,24 +712,13 @@ def choose_target_top_n(G, snapped_nodes, dest_nodes, weight_attr, target_value,
 
 def _top_n_direct(G, src_node, dest_nodes, weight_attr, target_value, top_n):
     """유효 좌표 1개: 각 dest_node별 최단경로, T_j 필터 → |metric-T| 정렬 → 상위 top_n."""
-    all_cands = []
     dest_nodes_set = set(dest_nodes)
-    total = len(dest_nodes)
     t0 = time.time()
-    for i, dst in enumerate(dest_nodes, start=1):
-        if src_node == dst:
-            continue
-        try:
-            result = shortest_path_leg(G, src_node, dst, weight_attr)
-        except Exception:
-            continue
-        if _passes_other_dest(result["nodes"], dest_nodes_set):
-            continue
-        all_cands.append(result)
 
-        if i % 50 == 0:
-            elapsed = time.time() - t0
-            print(f"    [dest_scan] n={i}/{total}, collected={len(all_cands)}, elapsed={elapsed:.1f}s")
+    # 모든 후보로 '처음 진입'하는 깨끗한 최단경로(core 봉인)를 단일 Dijkstra로 산출
+    clean = collect_clean_dest_candidates(G, src_node, dest_nodes, dest_nodes_set, weight_attr)
+    all_cands = list(clean.values())
+    print(f"    [dest_scan] polygon dest={len(dest_nodes)}, clean={len(all_cands)}, elapsed={time.time() - t0:.1f}s")
 
     if not all_cands:
         return []
@@ -712,24 +760,12 @@ def _top_n_via_waypoints(G, snapped_nodes, dest_nodes, weight_attr, target_value
         leg_min = shortest_path_leg(G, src, dst, weight_attr)
         front_min_metrics.append(float(leg_min["metric"]))
 
-    # 1차 패스: 마지막 polygon leg — dest_node별 최소 비용
-    last_min_by_node = {}
-    total = len(dest_nodes)
+    # 마지막 polygon leg: 전체 후보로 '처음 진입' 깨끗한 최단경로(core 봉인)를 단일 Dijkstra로 1회 산출
     t0 = time.time()
-    for i, dst in enumerate(dest_nodes, start=1):
-        if snapped_nodes[-1] == dst:
-            continue
-        try:
-            last_min = shortest_path_leg(G, snapped_nodes[-1], dst, weight_attr)
-            if _passes_other_dest(last_min["nodes"], dest_nodes_set):
-                continue
-            last_min_by_node[dst] = float(last_min["metric"])
-        except Exception:
-            continue
-
-        if i % 50 == 0:
-            elapsed = time.time() - t0
-            print(f"    [dest_scan] n={i}/{total}, elapsed={elapsed:.1f}s")
+    clean_by_node = collect_clean_dest_candidates(G, snapped_nodes[-1], dest_nodes, dest_nodes_set, weight_attr)
+    last_min_by_node = {dst: float(r["metric"]) for dst, r in clean_by_node.items()}
+    print(
+        f"    [dest_scan] polygon dest={len(dest_nodes)}, clean={len(last_min_by_node)}, elapsed={time.time() - t0:.1f}s")
 
     if not last_min_by_node:
         return []
@@ -737,7 +773,7 @@ def _top_n_via_waypoints(G, snapped_nodes, dest_nodes, weight_attr, target_value
     last_min_metric = min(last_min_by_node.values())
     s_min = sum(front_min_metrics) + last_min_metric
 
-    # 마지막 polygon leg: dest_node별 최단경로 1개 + t_last 사전 필터링
+    # t_last 사전 필터링
     t_last = float(target_value) - (s_min - last_min_metric)
     filtered_dest = [dst for dst, m in last_min_by_node.items() if m <= t_last]
 
@@ -752,9 +788,12 @@ def _top_n_via_waypoints(G, snapped_nodes, dest_nodes, weight_attr, target_value
     print(f"  [target] t_last={t_last:.4f}, filtered_dest_nodes={len(filtered_dest)}/{len(last_min_by_node)}"
           f"{' (fallback: 최소비용 1개)' if fallback_used else ''}")
 
-    last_candidates = _collect_polygon_leg_shortest_only(G, snapped_nodes[-1], filtered_dest, weight_attr,
-                                                         dest_nodes_set=dest_nodes_set)
-    if last_candidates is None:
+    last_candidates = sorted(
+        (clean_by_node[d] for d in filtered_dest),
+        key=lambda x: (float(x["metric"]), x["dst_node"]),
+    )
+    print(f"    [polygon_leg] filtered={len(filtered_dest)}, candidates={len(last_candidates)}")
+    if not last_candidates:
         return []
 
     lm = [float(c["metric"]) for c in last_candidates]
@@ -1000,31 +1039,6 @@ def _collect_leg_candidates_with_cap(G, src, dst, weight_attr, metric_cap):
     elapsed = time.time() - t0
     print(f"    [cap_collect] 완료: k={len(candidates)}, cap={metric_cap:.4f}, elapsed={elapsed:.1f}s")
     return candidates if candidates else None
-
-
-def _collect_polygon_leg_shortest_only(G, src_node, filtered_dest_nodes, weight_attr, dest_nodes_set=None):
-    candidates = []
-    total = len(filtered_dest_nodes)
-    t0 = time.time()
-    for i, dst in enumerate(filtered_dest_nodes, start=1):
-        if src_node == dst:
-            continue
-        try:
-            result = shortest_path_leg(G, src_node, dst, weight_attr)
-        except Exception:
-            continue
-        if dest_nodes_set and _passes_other_dest(result["nodes"], dest_nodes_set):
-            continue
-        candidates.append(result)
-
-        if i % 50 == 0:
-            elapsed = time.time() - t0
-            print(f"    [polygon_leg] n={i}/{total}, collected={len(candidates)}, elapsed={elapsed:.1f}s")
-
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: (float(x["metric"]), x["dst_node"]))
-    return candidates
 
 
 # ── 레코드 생성 ──────────────────────────────────────────
