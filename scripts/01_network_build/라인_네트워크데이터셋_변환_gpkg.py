@@ -55,8 +55,20 @@ out_dir = filedialog.askdirectory(title="출력 폴더 선택")
 if not out_dir:
     raise SystemExit("출력 폴더 미선택")
 
-split_input = input("세그먼트 분할 간격(m, 0=분할 안 함): ").strip()
-split_interval = int(split_input) if split_input else 0
+# DEM 셀 크기를 분할 간격 기본값으로 사용 (래스터 그래프와 동일 해상도)
+with rasterio.open(in_dem) as src:
+    if src.crs is None or src.crs.to_epsg() != 5179:
+        raise SystemExit(f"DEM CRS 오류: EPSG:5179 필요, 현재 {src.crs}")
+    dem_xres, dem_yres = abs(src.res[0]), abs(src.res[1])
+if abs(dem_xres - dem_yres) > 0.1:
+    print(f"  ⚠ DEM x·y 해상도 불일치: x={dem_xres:.4f}, y={dem_yres:.4f} → x값 사용")
+dem_cell_m = dem_xres
+print(f"  DEM 셀 크기: {dem_cell_m:.6f}m")
+
+split_input = input(
+    f"세그먼트 분할 간격(m, Enter=DEM 셀 크기 {dem_cell_m:.4f}, 0=분할 안 함): "
+).strip()
+split_interval = float(split_input) if split_input else dem_cell_m
 
 # 수상 구간 속도 (km/h)
 V_SEA = 5.0
@@ -362,7 +374,7 @@ def main():
 
     if split_interval > 0:
         print("=" * 60)
-        print(f"Step 1: 라인 분할 (간격: {split_interval}m)")
+        print(f"Step 1: 라인 분할 (간격: {split_interval:.4f}m)")
         print("=" * 60)
         gdf = split_all_lines(gdf, split_interval)
     else:
@@ -389,7 +401,7 @@ def main():
     print("=" * 60)
     print("저장")
     print("=" * 60)
-    out_path = os.path.join(out_dir, "ND.gpkg")
+    out_path = os.path.join(out_dir, "nd.gpkg")
     gdf.to_file(out_path, driver="GPKG")
     print(f"완료: {out_path}")
 
