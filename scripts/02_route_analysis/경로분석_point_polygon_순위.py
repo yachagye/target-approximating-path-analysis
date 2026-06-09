@@ -1,14 +1,30 @@
-# 목표값 근접 상위 N위 경로 분석 (포인트-폴리곤 / 경유지 포함)
+# 목표값 근접/구간 상위 N위 경로 분석 (포인트-폴리곤 / 경유지 포함)
 #
 # 입력:
 #  1) graph_cache.pkl
-#  2) 출발 포인트.csv (route_id, x1, y1, ..., xN, yN, target_km 또는 target_hr)
+#  2) 출발 포인트.csv
+#       거리 모드: route_id, x1, y1, ..., xN, yN, km_beg, km_end
+#       시간 모드: route_id, x1, y1, ..., xN, yN, hr_beg, hr_end
+#     - 목표값 분기(행별):
+#         · beg만 입력(end 빈칸) → 단일 목표값 모드 (T = beg, |비용-T| 근접 상위 N)
+#         · beg·end 모두 입력 → 구간 모드 [beg, end]
+#         · beg 빈칸 → 행 건너뜀(순위 분석은 목표값 필수)
+#         · beg > end → 오류로 행 건너뜀(콘솔 보고)
 #  3) 목적 폴리곤.gpkg (route_id 필드 필요)
 #  4) 선택: 장애물 GPKG (line / polygon)
+#
+# 알고리즘:
+#  [단일 모드] 원본 목표값 근접 상위 N (min|비용 - T|)
+#  [구간 모드] 구간 [beg, end]에 드는 경로를 metric 오름차순으로 수집
+#    - 좌표 1개: 구간에 드는 경계 지점(dest_node) 전부 (각 1경로, 다양성 필터 없음)
+#    - 경유지 있음: 앞쪽 leg 조합 + 마지막 polygon leg 범위 수집,
+#                  전체 경로 노드열 길이가중 Jaccard 다양성 필터(앞쪽 미세 변형 제거)
+#    - 구간 내 후보가 없으면 구간 최근접 1개(fallback)
 #
 # 출력:
 #  - 경로_point_polygon_순위.gpkg (EPSG:5179)
 #     layer: route_target  (경로당 최대 TOP_N개, rank 속성 포함)
+#                          단일 모드는 km_end/hr_end가 NULL (target_val에는 beg 기록)
 
 import os
 import csv
@@ -28,8 +44,9 @@ from shapely.ops import substring
 from pyproj import Transformer
 
 
-TOP_N = 500
+TOP_N = 30
 K_MAX = 30000
+SIM_THRESHOLD = 0.95       # 다양성 필터: 이 값 이상이면 미세 변형으로 간주하여 제외
 
 NODE_ROUND_M = 0.01
 
@@ -45,13 +62,14 @@ def parse_routes_csv(csv_path, mode):
             if not header:
                 raise RuntimeError("CSV가 비어 있습니다.")
 
-            target_col = "target_km" if mode == "km" else "target_hr"
+            beg_col = "km_beg" if mode == "km" else "hr_beg"
+            end_col = "km_end" if mode == "km" else "hr_end"
             if header[0].strip() != "route_id":
                 raise RuntimeError("첫 컬럼은 route_id 이어야 합니다.")
-            if header[-1].strip() != target_col:
-                raise RuntimeError(f"마지막 컬럼은 {target_col} 이어야 합니다.")
+            if header[-2].strip() != beg_col or header[-1].strip() != end_col:
+                raise RuntimeError(f"마지막 두 컬럼은 {beg_col}, {end_col} 이어야 합니다.")
 
-            coord_cols = header[1:-1]
+            coord_cols = header[1:-2]
             if len(coord_cols) < 2 or len(coord_cols) % 2 != 0:
                 raise RuntimeError("좌표 컬럼 구조가 올바르지 않습니다.")
 
@@ -64,12 +82,13 @@ def parse_routes_csv(csv_path, mode):
                     row = row[:len(header)]
 
                 route_id = str(row[0]).strip()
-                target_str = str(row[-1]).strip()
-                if route_id == "" or target_str == "":
+                beg_str = str(row[-2]).strip()
+                end_str = str(row[-1]).strip()
+                if route_id == "" or beg_str == "":
                     continue
 
                 coords = []
-                for i in range(1, len(row) - 1, 2):
+                for i in range(1, len(row) - 2, 2):
                     xs, ys = str(row[i]).strip(), str(row[i + 1]).strip()
                     if xs == "" or ys == "":
                         continue
@@ -78,7 +97,13 @@ def parse_routes_csv(csv_path, mode):
                 if len(coords) < 1:
                     continue
 
-                out.append({"route_id": route_id, "coords": coords, "target": float(target_str)})
+                beg = float(beg_str)
+                end = float(end_str) if end_str != "" else None
+                if end is not None and beg > end:
+                    print(f"  [skip] {route_id}: beg({beg}) > end({end})")
+                    continue
+
+                out.append({"route_id": route_id, "coords": coords, "beg": beg, "end": end})
         return out
 
     try:
@@ -1043,18 +1068,296 @@ def _collect_leg_candidates_with_cap(G, src, dst, weight_attr, metric_cap):
 
 # ── 레코드 생성 ──────────────────────────────────────────
 
-def build_record(route_id, rank, weight_attr, target_value, mode, result, snap_start, snap_last, coord_n, G):
+def path_edge_set(G, path_nodes):
+    """노드열에서 간선 집합과 간선별 길이(length_3dkm)를 반환한다.
+    정방향·역방향을 동일 간선으로 보기 위해 frozenset 키를 사용한다."""
+    edges = {}
+    for a, b in zip(path_nodes[:-1], path_nodes[1:]):
+        edges[frozenset((a, b))] = float(G[a][b]["length_3dkm"])
+    return edges
+
+
+def weighted_jaccard(es_a, es_b):
+    """길이 가중 Jaccard. es_*: {edge_key: length_3dkm}."""
+    keys_a = set(es_a.keys())
+    keys_b = set(es_b.keys())
+    if not keys_a and not keys_b:
+        return 1.0
+    inter = keys_a & keys_b
+    inter_len = sum(es_a[k] for k in inter)
+    union_len = sum(es_a[k] for k in keys_a) + sum(es_b[k] for k in keys_b - keys_a)
+    if union_len <= 0:
+        return 0.0
+    return inter_len / union_len
+
+
+def _passes_diversity(es, selected_es):
+    """이미 선택된 경로들과 모두 Jaccard < SIM_THRESHOLD이면 True."""
+    for prev in selected_es:
+        if weighted_jaccard(es, prev) >= SIM_THRESHOLD:
+            return False
+    return True
+
+
+def _interval_direct_top_n(G, src_node, dest_nodes, weight_attr, beg, end, top_n):
+    """좌표 1개 구간 모드: 구간 [beg,end]에 드는 dest_node를 metric 오름차순으로 전부 수집.
+    각 dest_node당 경로가 하나뿐이라 미세 변형이 없으므로 다양성 필터를 적용하지 않는다.
+    구간에 드는 dest_node가 없으면 구간 최근접 1개(fallback)를 반환한다."""
+    dest_nodes_set = set(dest_nodes)
+    t0 = time.time()
+    clean = collect_clean_dest_candidates(G, src_node, dest_nodes, dest_nodes_set, weight_attr)
+    all_cands = list(clean.values())
+    print(f"    [dest_scan] polygon dest={len(dest_nodes)}, clean={len(all_cands)}, elapsed={time.time()-t0:.1f}s")
+    if not all_cands:
+        return []
+
+    in_range = [c for c in all_cands if beg <= float(c["metric"]) <= end]
+
+    if not in_range:
+        # fallback: 구간 최근접 1개
+        best = min(all_cands, key=lambda c: max(0.0, beg - float(c["metric"]), float(c["metric"]) - end))
+        print(f"    [interval] 구간 [{beg}, {end}] 내 dest 없음 → 구간 최근접 1개")
+        in_range = [best]
+
+    in_range.sort(key=lambda c: float(c["metric"]))
+    results = []
+    for c in in_range[:top_n]:
+        results.append({
+            "nodes": c["nodes"], "costs": c["costs"], "metric": float(c["metric"]),
+            "dst_node": c["dst_node"], "candidate_n": len(in_range), "legs_n": 1,
+        })
+    return results
+
+
+def _interval_via_waypoints_top_n(G, snapped_nodes, dest_nodes, weight_attr, beg, end, top_n):
+    """경유지 구간 모드: 앞쪽 leg 최소 고정 + 마지막 polygon leg를 [beg,end] 범위 수집.
+    전체 경로 노드열 Jaccard 다양성 필터(앞쪽 point-to-point leg 미세 변형 제거) 후 rank.
+    구간에 드는 조합이 없으면 구간 최근접 1개(fallback)."""
+    front_leg_pairs = list(zip(snapped_nodes[:-1], snapped_nodes[1:]))
+    dest_nodes_set = set(dest_nodes)
+
+    front_min_metrics = []
+    for src, dst in front_leg_pairs:
+        leg_min = shortest_path_leg(G, src, dst, weight_attr)
+        front_min_metrics.append(float(leg_min["metric"]))
+
+    t0 = time.time()
+    clean_by_node = collect_clean_dest_candidates(G, snapped_nodes[-1], dest_nodes, dest_nodes_set, weight_attr)
+    last_min_by_node = {dst: float(r["metric"]) for dst, r in clean_by_node.items()}
+    print(f"    [dest_scan] polygon dest={len(dest_nodes)}, clean={len(last_min_by_node)}, elapsed={time.time()-t0:.1f}s")
+    if not last_min_by_node:
+        return []
+
+    last_min_metric = min(last_min_by_node.values())
+    s_min = sum(front_min_metrics) + last_min_metric
+
+    # t_last 사전 필터: (T+범위 상한) 기준으로 end 사용
+    t_last = float(end) - (s_min - last_min_metric)
+    filtered_dest = [dst for dst, m in last_min_by_node.items() if m <= t_last]
+    if not filtered_dest:
+        filtered_dest = [min(last_min_by_node, key=last_min_by_node.get)]
+
+    last_candidates = sorted(
+        (clean_by_node[d] for d in filtered_dest),
+        key=lambda x: (float(x["metric"]), x["dst_node"]),
+    )
+    print(f"    [polygon_leg] filtered={len(filtered_dest)}, candidates={len(last_candidates)}")
+    if not last_candidates:
+        return []
+
+    lm = [float(c["metric"]) for c in last_candidates]
+    N_l = len(lm)
+    F = len(front_leg_pairs)
+    mid = (beg + end) / 2.0
+
+    # [beg, end] 범위 조합을 total 오름차순으로 방출하는 min-heap 병합(k-smallest-pairs).
+    # 앞쪽(front)을 c_front 오름차순으로 지연 pull, polygon leg(lm)을 col로 둔다. 각 행은
+    # lo(범위 하한 통과 첫 col)에서 seed하며, 하한 때문에 행의 in-range 최소 total이 c_front에
+    # 단조가 아니므로, "다음 행 하한(c_front + min_l)이 현재 heap 최소 total 이하인 동안 미리
+    # pull"하는 lower-bound 방식으로 전역 total 오름차순을 보장한다.
+    min_l = lm[0]
+    front_pool = []          # [(c_front, front_obj), ...]
+    fb = None                # fallback: (front_obj, last_idx=0)
+    fb_d = None
+    leg_cands = None
+    front_done = False
+    _buf = []                # F==1 미리보기 버퍼 (길이 0 또는 1)
+    t0 = time.time()
+
+    if F == 1:
+        _front_gen = nx.shortest_simple_paths(
+            G, source=front_leg_pairs[0][0], target=front_leg_pairs[0][1], weight=weight_attr)
+
+        def _front_peek():
+            nonlocal front_done
+            if _buf:
+                return _buf[0][0]
+            if front_done:
+                return None
+            try:
+                pn = next(_front_gen)
+            except StopIteration:
+                front_done = True
+                return None
+            cst = accumulate_costs(G, pn)
+            cf = path_metric(cst, weight_attr)
+            _buf.append((cf, {"nodes": pn, "costs": cst, "metric": cf}))
+            return cf
+
+        def _front_take():
+            return _buf.pop(0)
+    else:
+        leg_cands = []
+        for idx, (src, dst) in enumerate(front_leg_pairs):
+            t_j = float(end) - (s_min - front_min_metrics[idx])
+            cands = _collect_leg_candidates_with_cap(G, src, dst, weight_attr, t_j)
+            if not cands:
+                return []
+            leg_cands.append(cands)
+        front_metrics = [[float(c["metric"]) for c in cs] for cs in leg_cands]
+        front_sizes = [len(m) for m in front_metrics]
+        start = tuple([0] * F)
+        start_sum = sum(front_metrics[j][0] for j in range(F))
+        combo_heap = [(start_sum, start)]
+        visited = {start}
+
+        def _front_peek():
+            return combo_heap[0][0] if combo_heap else None
+
+        def _front_take():
+            c_front, state = heapq.heappop(combo_heap)
+            for k in range(F):
+                ni = state[k] + 1
+                if ni < front_sizes[k]:
+                    ns = list(state)
+                    ns[k] = ni
+                    ns = tuple(ns)
+                    if ns not in visited:
+                        visited.add(ns)
+                        new_sum = c_front - front_metrics[k][state[k]] + front_metrics[k][ni]
+                        heapq.heappush(combo_heap, (new_sum, ns))
+            return c_front, state
+
+    merge_heap = []  # (total, fi, j)
+
+    def _take_and_seed():
+        nonlocal fb, fb_d
+        cf, obj = _front_take()
+        fi = len(front_pool)
+        front_pool.append((cf, obj))
+        tot_min = cf + min_l
+        d_fb = max(0.0, beg - tot_min, tot_min - end)
+        if fb is None or d_fb < fb_d:
+            fb_d = d_fb
+            fb = (obj, 0)
+        lo = _bisect.bisect_left(lm, beg - cf)
+        if lo < N_l and (cf + lm[lo]) <= end:
+            heapq.heappush(merge_heap, (cf + lm[lo], fi, lo))
+
+    def assemble(front_obj, j):
+        if F == 1:
+            chosen = [front_obj, last_candidates[j]]
+        else:
+            chosen = [leg_cands[k][front_obj[k]] for k in range(F)] + [last_candidates[j]]
+        merged = merge_leg_paths(chosen)
+        tcosts = sum_cost_dicts([x["costs"] for x in chosen])
+        tmetric = sum(float(x["metric"]) for x in chosen)
+        return chosen, merged, tcosts, tmetric
+
+    selected = []
+    selected_es = []
+    popped = 0
+
+    while True:
+        # lower-bound pull-ahead: 다음 행 하한이 현재 heap 최소 이하인 동안 미리 pull
+        while True:
+            nc = _front_peek()
+            if nc is None:
+                break
+            if (nc + min_l) > end:
+                break
+            if F == 1 and len(front_pool) >= K_MAX:
+                front_done = True
+                _buf.clear()
+                break
+            if merge_heap and (nc + min_l) > merge_heap[0][0]:
+                break
+            _take_and_seed()
+
+        if not merge_heap:
+            break
+
+        total, fi, j = heapq.heappop(merge_heap)
+        if total > end:
+            break
+        popped += 1
+        if popped % 10000 == 0:
+            print(
+                f"    [iterate] popped={popped}, total={total:.4f}, heap={len(merge_heap)}, fronts={len(front_pool)}, selected={len(selected)}, elapsed={time.time() - t0:.1f}s")
+
+        cf, front_obj = front_pool[fi]
+        if (j + 1) < N_l and (cf + lm[j + 1]) <= end:
+            heapq.heappush(merge_heap, (cf + lm[j + 1], fi, j + 1))
+
+        if total >= beg:
+            chosen, merged, tcosts, tmetric = assemble(front_obj, j)
+            es = path_edge_set(G, merged)
+            if _passes_diversity(es, selected_es):
+                selected.append({"nodes": merged, "costs": tcosts, "metric": tmetric,
+                                 "dst_node": last_candidates[j]["dst_node"],
+                                 "candidate_n": 0, "legs_n": len(chosen)})
+                selected_es.append(es)
+                if len(selected) >= top_n:
+                    break
+
+    candidate_n = len(front_pool) + len(last_candidates)
+    print(
+        f"    [iterate] 완료: popped={popped}, fronts={len(front_pool)}, selected={len(selected)}, elapsed={time.time() - t0:.1f}s")
+
+    if not selected:
+        if fb is None:
+            return []
+        front_obj, j = fb
+        chosen, merged, tcosts, tmetric = assemble(front_obj, j)
+        print(f"    [interval] 구간 내 조합 없음 → 구간 최근접 1개")
+        return [{"nodes": merged, "costs": tcosts, "metric": tmetric,
+                 "dst_node": last_candidates[j]["dst_node"], "candidate_n": candidate_n, "legs_n": len(chosen)}]
+
+    for s in selected:
+        s["candidate_n"] = candidate_n
+
+    return selected
+
+
+def choose_target_interval_top_n(G, snapped_nodes, dest_nodes, weight_attr, beg, end, top_n=TOP_N):
+    """구간 [beg,end] 모드 순위 수집 진입점."""
+    if len(snapped_nodes) == 1:
+        print(f"  [interval] direct: weight={weight_attr}, [{beg:.4f}, {end:.4f}], top_n={top_n}, dest={len(dest_nodes)}")
+        return _interval_direct_top_n(G, snapped_nodes[0], dest_nodes, weight_attr, beg, end, top_n)
+    else:
+        print(f"  [interval] legs={len(snapped_nodes)}(front={len(snapped_nodes)-1}+polygon=1), [{beg:.4f}, {end:.4f}], top_n={top_n}")
+        return _interval_via_waypoints_top_n(G, snapped_nodes, dest_nodes, weight_attr, beg, end, top_n)
+
+
+def build_record(route_id, rank, weight_attr, beg, end, mode, result, snap_start, snap_last, coord_n, G):
     geom = path_to_linestring(G, result["nodes"])
     costs = result["costs"]
     dst_x, dst_y = result["dst_node"]
+
+    metric = float(result["metric"])
+    # abs_diff: 단일(end None) → |metric-beg| / 구간 → 구간거리
+    if end is None:
+        abs_diff = float(abs(metric - beg))
+    else:
+        abs_diff = float(max(0.0, beg - metric, metric - end))
 
     rec = {
         "route_id": route_id,
         "rank": int(rank),
         "weight_attr": weight_attr,
-        "target_val": float(target_value),
-        "metric_val": float(result["metric"]),
-        "abs_diff": float(abs(result["metric"] - target_value)),
+        "target_val": float(beg),
+        "metric_val": metric,
+        "abs_diff": abs_diff,
         "length_km": float(costs["length_km"]),
         "hour_ks": float(costs["hour_ks"]),
         "hour_tob": float(costs["hour_tob"]),
@@ -1071,9 +1374,11 @@ def build_record(route_id, rank, weight_attr, target_value, mode, result, snap_s
     }
 
     if mode == "km":
-        rec["target_km"] = float(target_value)
+        rec["km_beg"] = float(beg)
+        rec["km_end"] = float(end) if end is not None else None
     else:
-        rec["target_hr"] = float(target_value)
+        rec["hr_beg"] = float(beg)
+        rec["hr_end"] = float(end) if end is not None else None
 
     return rec
 
@@ -1172,11 +1477,13 @@ def main():
 
         for i, row in enumerate(routes, start=1):
             route_id = row["route_id"]
-            target_value = float(row["target"])
+            beg = row["beg"]
+            end = row["end"]   # None 가능 (단일 모드)
             poly = poly_map[route_id]
 
             t_route_start = time.time()
-            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_value}, coords={len(row['coords'])}개)")
+            tdisp = f"단일 T={beg}" if end is None else f"구간 [{beg}, {end}]"
+            print(f"\n[{i}/{total}] {route_id} 시작 ({tdisp}, coords={len(row['coords'])}개)")
 
             snapped_nodes = []
             snap_dists = []
@@ -1212,8 +1519,12 @@ def main():
             print(f"  dest_nodes: {len(dest_nodes)}")
 
             try:
-                top_results = choose_target_top_n(
-                    G_work, snapped_nodes, dest_nodes, target_weight_attr, target_value)
+                if end is None:
+                    top_results = choose_target_top_n(
+                        G_work, snapped_nodes, dest_nodes, target_weight_attr, beg)
+                else:
+                    top_results = choose_target_interval_top_n(
+                        G_work, snapped_nodes, dest_nodes, target_weight_attr, beg, end)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 top_results = []
 
@@ -1230,7 +1541,8 @@ def main():
                     route_id=route_id,
                     rank=rank,
                     weight_attr=target_weight_attr,
-                    target_value=target_value,
+                    beg=beg,
+                    end=end,
                     mode=mode,
                     result=result,
                     snap_start=snap_dists[0],
