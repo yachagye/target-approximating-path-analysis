@@ -25,11 +25,9 @@ This repository implements a GIS-based path analysis model that searches a netwo
 > 양정현 2026. 역사 GIS를 위한 목표값 근접 경로 분석 모델의 설계와 적용
 > — 조선시대 경기 광주의 사례를 중심으로. *조선시대사학보 117*.
 >
-> Yang, J. (forthcoming). Design and Application of a Target-Approximating
+> Yang, J. 2026. Design and Application of a Target-Approximating
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
-> during the Joseon Dynasty. *(Journal name)*.
-
-*※ 권·호·페이지·DOI 추후 갱신 예정*
+> during the Joseon Dynasty. *THE CHOSON DYNASTY HISTORY ASSOCIATION 117*.
 
 ---
 
