@@ -1,28 +1,33 @@
-# 목표 거리/시간 기준 최적 경로 분석 (포인트-포인트 / 경유지 포함)
+# 목표 거리/시간 기준 기본 경로 분석 (포인트-포인트 / 경유지 포함)
 #
 # 입력:
 #  1) graph_cache.pkl  (네트워크데이터셋_DiGraph_변환_gpkg_pkl.py 출력물: payload dict)
 #  2) 경로 분석.csv
-#       route_id, x1, y1, x2, y2, ..., xN, yN, target_km 또는 target_hr
+#       거리 모드: route_id, x1, y1, ..., xN, yN, km_beg, km_end
+#       시간 모드: route_id, x1, y1, ..., xN, yN, hr_beg, hr_end
 #     - 좌표: EPSG:4326 (경도 x, 위도 y)
-#     - target 셀이 비어 있으면 해당 경로는 route_min_*만 산출(route_target 생략)
-#  3) 선택 입력: 장애물 GPKG
-#     - line 또는 polygon만 지원
-#     - 장애물은 완전 차단(교차 간선 제거)
+#     - 목표값 분기(행별):
+#         · beg만 입력(end 빈칸) → 단일 목표값 모드 (T = beg, |비용-T| 최소 근접 경로)
+#         · beg·end 모두 입력 → 구간 모드 [beg, end]
+#         · beg 빈칸 → 미입력 (route_min_*만 산출, route_target 생략)
+#         · beg > end 또는 end만 입력 → 오류로 해당 행 건너뜀(콘솔 보고)
+#  3) 선택 입력: 장애물 GPKG (line 또는 polygon, 완전 차단)
 #
-# route_target 알고리즘 (target 입력 경로 대상):
-#  - 단일 구간(경유지 없음): K_INIT/K_MAX 2단계 후보 생성 후 |비용-목표값| 최소 선택
-#  - 2-leg(경유지 1개): T_j 작은 leg bisect(사전 생성) + 큰 leg lazy iterate (heap 불필요)
-#  - 3-leg 이상: T_j 사전 생성 후 앞쪽 legs min-heap + 마지막 leg bisect
+# route_target 알고리즘 (기본 분석: 경로당 1개):
+#  [단일 모드] 원본 목표값 근접 분석을 그대로 적용한다 (min|비용 - T|).
+#    - 단일 구간(경유지 없음): K_INIT/K_MAX 2단계 후보 생성 후 |비용-T| 최소 선택
+#    - 2-leg(경유지 1개): T_j 작은 leg bisect + 큰 leg lazy iterate
+#    - 3-leg 이상: T_j 사전 생성 후 앞쪽 legs min-heap + 마지막 leg bisect
+#  [구간 모드] 선택 임피던스의 최소비용경로를 산출한다. 그 metric이 [beg, end] 안이면
+#    그 경로가 곧 구간 내 목표값 최적이므로 1개로 확정한다. 밖이면(최소가 end 초과)
+#    그 최소경로를 fallback으로 출력한다. abs_diff = max(0, beg-metric, metric-end).
+#  ※ 구간 내 대안 경로를 여러 개 탐색하려면 순위 분석(_순위.py)을 사용한다.
 #
 # 출력:
 #  - 경로_point_point.gpkg (EPSG:5179)
-#     layer: route_min_km
-#     layer: route_min_hr_ks
-#     layer: route_min_hr_tob
-#     layer: route_min_kcal_ks
-#     layer: route_min_kcal_tob
-#     layer: route_target  (target 입력 경로만 등록. route_min_* 레이어의 abs_diff·target_km/hr은 target 미입력 시 NULL)
+#     layer: route_min_km / route_min_hr_ks / route_min_hr_tob / route_min_kcal_ks / route_min_kcal_tob
+#     layer: route_target  (목표값 입력 경로만 등록, 경로당 1개)
+#                          abs_diff·km_beg/end(hr_beg/end)는 미입력 시 NULL, 단일 모드는 km_end/hr_end가 NULL
 
 import os
 import csv
@@ -247,13 +252,14 @@ def parse_routes_csv(csv_path, mode):
             if not header:
                 raise RuntimeError("CSV 헤더가 없습니다.")
 
-            target_col = "target_km" if mode == "km" else "target_hr"
+            beg_col = "km_beg" if mode == "km" else "hr_beg"
+            end_col = "km_end" if mode == "km" else "hr_end"
             if header[0].strip() != "route_id":
                 raise RuntimeError("첫 컬럼은 route_id 이어야 합니다.")
-            if header[-1].strip() != target_col:
-                raise RuntimeError(f"마지막 컬럼은 {target_col} 이어야 합니다.")
+            if header[-2].strip() != beg_col or header[-1].strip() != end_col:
+                raise RuntimeError(f"마지막 두 컬럼은 {beg_col}, {end_col} 이어야 합니다.")
 
-            coord_cols = header[1:-1]
+            coord_cols = header[1:-2]
             if len(coord_cols) < 4 or len(coord_cols) % 2 != 0:
                 raise RuntimeError("좌표 컬럼 구조가 올바르지 않습니다.")
 
@@ -266,12 +272,13 @@ def parse_routes_csv(csv_path, mode):
                     row = row[:len(header)]
 
                 route_id = str(row[0]).strip()
-                target_str = str(row[-1]).strip()
+                beg_str = str(row[-2]).strip()
+                end_str = str(row[-1]).strip()
                 if route_id == "":
                     continue
 
                 coords = []
-                for i in range(1, len(row) - 1, 2):
+                for i in range(1, len(row) - 2, 2):
                     xs = str(row[i]).strip()
                     ys = str(row[i + 1]).strip()
                     if xs == "" or ys == "":
@@ -281,10 +288,22 @@ def parse_routes_csv(csv_path, mode):
                 if len(coords) < 2:
                     continue
 
+                if beg_str == "" and end_str != "":
+                    print(f"  [skip] {route_id}: end만 입력됨 (beg 누락)")
+                    continue
+
+                beg = float(beg_str) if beg_str != "" else None
+                end = float(end_str) if end_str != "" else None
+
+                if beg is not None and end is not None and beg > end:
+                    print(f"  [skip] {route_id}: beg({beg}) > end({end})")
+                    continue
+
                 out.append({
                     "route_id": route_id,
                     "coords": coords,
-                    "target": float(target_str) if target_str != "" else None,
+                    "beg": beg,
+                    "end": end,
                 })
         return out
 
@@ -977,16 +996,41 @@ def choose_min_route(G, snapped_nodes, weight_attr):
     }
 
 
-def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, result, snap_start, snap_end, G, candidate_n=None):
+def choose_target_interval_basic(G, snapped_nodes, weight_attr, beg, end):
+    """구간 모드 기본 분석: 선택 임피던스의 최소비용경로 1개를 산출한다.
+    최소경로의 metric이 [beg, end] 안이면 그 경로가 곧 구간 내 목표값 최적이다.
+    밖이면(최소가 end 초과) 그 최소경로를 fallback으로 반환한다.
+
+    Returns: result dict (route_min과 동일 구조) 또는 None
+    """
+    result = choose_min_route(G, snapped_nodes, weight_attr)
+    if result is None:
+        return None
+    metric = float(result["metric"])
+    if not (beg <= metric <= end):
+        print(f"    [interval] 최소경로 metric={metric:.4f}가 구간 [{beg}, {end}] 밖 → fallback")
+    return result
+
+
+def build_record(route_id, weight_attr, target_weight_attr, beg, end, mode, result, snap_start, snap_end, G, candidate_n=None):
     geom = path_to_linestring(G, result["nodes"])
     costs = result["costs"]
 
     target_metric = path_metric_from_costs(costs, target_weight_attr)
+
+    # abs_diff: 미입력(beg None) → None / 단일(end None) → |metric-beg| / 구간 → 구간거리
+    if beg is None:
+        abs_diff = None
+    elif end is None:
+        abs_diff = float(abs(target_metric - beg))
+    else:
+        abs_diff = float(max(0.0, beg - target_metric, target_metric - end))
+
     rec = {
         "route_id": route_id,
         "weight_attr": weight_attr,
         "metric_val": float(result["metric"]),
-        "abs_diff": float(abs(target_metric - target_value)) if target_value is not None else None,
+        "abs_diff": abs_diff,
         "length_km": float(costs["length_km"]),
         "hour_ks": float(costs["hour_ks"]),
         "hour_tob": float(costs["hour_tob"]),
@@ -1002,9 +1046,11 @@ def build_record(route_id, weight_attr, target_weight_attr, target_value, mode, 
         rec["candidate_n"] = int(candidate_n)
 
     if mode == "km":
-        rec["target_km"] = float(target_value) if target_value is not None else None
+        rec["km_beg"] = float(beg) if beg is not None else None
+        rec["km_end"] = float(end) if end is not None else None
     else:
-        rec["target_hr"] = float(target_value) if target_value is not None else None
+        rec["hr_beg"] = float(beg) if beg is not None else None
+        rec["hr_end"] = float(end) if end is not None else None
 
     return rec
 
@@ -1107,12 +1153,18 @@ def main():
         total = len(routes)
         for i, row in enumerate(routes, start=1):
             route_id = row["route_id"]
-            target_value = row["target"]  # None 가능 (target 미입력 시)
+            beg = row["beg"]   # None 가능 (미입력)
+            end = row["end"]   # None 가능 (단일 모드)
             coords_wgs84 = row["coords"]
 
             t_route_start = time.time()
-            target_display = f"{target_value}" if target_value is not None else "미입력"
-            print(f"\n[{i}/{total}] {route_id} 시작 (target={target_display}, coords={len(coords_wgs84)}개)")
+            if beg is None:
+                target_display = "미입력"
+            elif end is None:
+                target_display = f"단일 T={beg}"
+            else:
+                target_display = f"구간 [{beg}, {end}]"
+            print(f"\n[{i}/{total}] {route_id} 시작 ({target_display}, coords={len(coords_wgs84)}개)")
 
             snapped_nodes = []
             snap_dists = []
@@ -1136,27 +1188,41 @@ def main():
 
             print(f"  snap_m: {[f'{d:.1f}' for d in snap_dists]}")
 
-            if target_value is None:
-                target_result = None
-                print(f"  [target] target 미입력, route_min만 산출")
-            else:
+            target_result = None
+            target_candidate_n = None
+            if beg is None:
+                print(f"  [target] 목표값 미입력, route_min만 산출")
+            elif end is None:
+                # 단일 모드: 원본 목표값 근접 분석 (min|비용 - T|)
                 try:
                     target_result = choose_target_route(
                         G=G_work,
                         snapped_nodes=snapped_nodes,
                         weight_attr=target_weight_attr,
-                        target_value=target_value,
+                        target_value=beg,
                     )
-                except nx.NetworkXNoPath:
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
                     target_result = None
-                except nx.NodeNotFound:
+                if target_result is not None:
+                    target_candidate_n = target_result["candidate_n"]
+            else:
+                # 구간 모드: 최소비용경로 + 구간 판정
+                try:
+                    target_result = choose_target_interval_basic(
+                        G=G_work,
+                        snapped_nodes=snapped_nodes,
+                        weight_attr=target_weight_attr,
+                        beg=beg,
+                        end=end,
+                    )
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
                     target_result = None
 
-                if target_result is None:
-                    if restore_infos:
-                        restore_splits(G_work, restore_infos)
-                    print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
-                    continue
+            if beg is not None and target_result is None:
+                if restore_infos:
+                    restore_splits(G_work, restore_infos)
+                print(f"[{i}/{total}] {route_id} NO_TARGET_PATH")
+                continue
 
             for min_weight_attr, layer_name in MIN_WEIGHT_CONFIGS:
                 try:
@@ -1177,7 +1243,8 @@ def main():
                     route_id=route_id,
                     weight_attr=min_weight_attr,
                     target_weight_attr=target_weight_attr,
-                    target_value=target_value,
+                    beg=beg,
+                    end=end,
                     mode=mode,
                     result=min_result,
                     snap_start=snap_dists[0],
@@ -1191,13 +1258,14 @@ def main():
                     route_id=route_id,
                     weight_attr=target_weight_attr,
                     target_weight_attr=target_weight_attr,
-                    target_value=target_value,
+                    beg=beg,
+                    end=end,
                     mode=mode,
                     result=target_result,
                     snap_start=snap_dists[0],
                     snap_end=snap_dists[-1],
                     G=G_work,
-                    candidate_n=target_result["candidate_n"],
+                    candidate_n=target_candidate_n,
                 )
                 feats_target.append(rec_target)
 
