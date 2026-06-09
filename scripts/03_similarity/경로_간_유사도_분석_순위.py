@@ -2,7 +2,7 @@
 #
 # 입력:
 #  1) graph_cache.pkl
-#  2) 경로_top.gpkg (route_target 레이어, route_id + rank 필드)
+#  2) 경로_순위.gpkg (route_target 레이어, route_id + rank 필드)
 #
 # 비교 구조:
 #  - 각 route_id 내에서 rank 1(최근접 경로)을 기준선으로 고정
@@ -14,8 +14,6 @@
 # 출력:
 #  - 유사도_순위.csv (long format)
 #     route_id, filtered_rank, original_rank, jaccard
-#  - 유사도_순위_필터.gpkg
-#     필터 통과 피처 + rank 1 기준선 (filtered_rank=0)
 
 import os
 import csv
@@ -114,7 +112,7 @@ def weighted_jaccard(edges_a, edges_b, edge_length_lookup):
 
 
 def read_ranked_routes(gpkg_path, node_set):
-    """route_target 레이어에서 {route_id: {rank: edge_set}} 및 GeoDataFrame 반환."""
+    """route_target 레이어에서 {route_id: {rank: edge_set}} 반환."""
     layers = fiona.listlayers(gpkg_path)
     if "route_target" not in layers:
         raise RuntimeError("GPKG에 route_target 레이어가 없습니다.")
@@ -140,7 +138,7 @@ def read_ranked_routes(gpkg_path, node_set):
             result[rid] = {}
         result[rid][rank] = edges
 
-    return result, gdf
+    return result
 
 
 def main():
@@ -169,7 +167,7 @@ def main():
         print(f"  expanded nodes={len(all_node_set)}, segment edges={len(edge_length_lookup)}")
 
         print("[2/3] ranked 경로 읽기...")
-        ranked, gdf = read_ranked_routes(gpkg_path, all_node_set)
+        ranked = read_ranked_routes(gpkg_path, all_node_set)
         route_ids = sorted(ranked.keys())
         print(f"  route_id: {len(route_ids)}개")
 
@@ -193,7 +191,6 @@ def main():
         print(f"[3/3] Jaccard 유사도 산출 (최대 비교 rank {max_compare_n}개)...")
         print(f"  필터: 기선택 경로 대비 Jaccard >= {SIMILARITY_THRESHOLD} 제외, 상위 {FILTER_TOP_N}개 출력")
         rows = []
-        filter_map = {}  # (route_id, original_rank) -> filtered_rank
         single_rank_count = 0
         no_valid_count = 0
         for rid in route_ids:
@@ -231,7 +228,6 @@ def main():
 
             for frank, (orig_rank, jaccard) in enumerate(filtered, start=1):
                 rows.append([rid, frank, orig_rank, f"{jaccard:.4f}"])
-                filter_map[(rid, orig_rank)] = frank
 
         # CSV 출력
         header = ["route_id", "filtered_rank", "original_rank", "jaccard"]
@@ -247,24 +243,6 @@ def main():
             print(f"  [INFO] rank 1만 존재: {single_rank_count}건")
         if no_valid_count > 0:
             print(f"  [INFO] 임계값 미만 경로 없음 (전체 >= {SIMILARITY_THRESHOLD}): {no_valid_count}건")
-
-        # 필터 GPKG 출력
-        if filter_map:
-            # rank 1 기준선 포함 (filtered_rank=0)
-            for rid in set(k[0] for k in filter_map):
-                filter_map[(rid, 1)] = 0
-
-            gdf["_rid"] = gdf["route_id"].astype(str).str.strip()
-            gdf["_rank"] = gdf["rank"].astype(int)
-            gdf["_key"] = list(zip(gdf["_rid"], gdf["_rank"]))
-            mask = gdf["_key"].isin(filter_map)
-            gdf_out = gdf[mask].copy()
-            gdf_out["filtered_rank"] = gdf_out["_key"].map(filter_map)
-            gdf_out = gdf_out.drop(columns=["_rid", "_rank", "_key"])
-            gdf_out = gdf_out.sort_values(["route_id", "filtered_rank"])
-            out_gpkg = os.path.join(out_dir, "유사도_순위_필터.gpkg")
-            gdf_out.to_file(out_gpkg, layer="route_target", driver="GPKG")
-            print(f"saved: {out_gpkg} ({len(gdf_out)}개 피처)")
 
     except Exception as e:
         print(f"[ERROR] {e}")
