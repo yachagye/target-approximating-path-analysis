@@ -150,6 +150,7 @@ def read_layer_features(gpkg_path, prefix, node_set, edge_length_lookup):
         gdf = gdf.to_crs(TARGET_CRS)
 
     features = []
+    has_route_id = "route_id" in gdf.columns
 
     for idx, row in gdf.iterrows():
         geom = row.geometry
@@ -159,10 +160,12 @@ def read_layer_features(gpkg_path, prefix, node_set, edge_length_lookup):
         edges = geometry_to_edge_set(geom, node_set)
         feature_id = f"{prefix}_{len(features) + 1:03d}"
         length_km = edge_length_km(edges, edge_length_lookup)
+        route_id = str(row["route_id"]) if has_route_id else ""
 
         features.append(
             {
                 "feature_id": feature_id,
+                "route_id": route_id,
                 "source_index": idx,
                 "geometry": geom,
                 "edges": edges,
@@ -251,6 +254,7 @@ def main():
             print(f"  [{i}/{total}] {t_feat['feature_id']} 비교 중...")
 
             best_compare_id = ""
+            best_compare_route_id = ""
             best_jaccard = -1.0
             best_shared_km = 0.0
             best_target_only_km = 0.0
@@ -264,6 +268,7 @@ def main():
                 if jaccard > best_jaccard:
                     best_jaccard = jaccard
                     best_compare_id = c_feat["feature_id"]
+                    best_compare_route_id = c_feat["route_id"]
                     best_shared_km = s_km
                     best_target_only_km = t_only_km
                     best_compare_only_km = c_only_km
@@ -271,7 +276,9 @@ def main():
             best_match_rows.append(
                 [
                     t_feat["feature_id"],
+                    t_feat["route_id"],
                     best_compare_id,
+                    best_compare_route_id,
                     f"{best_jaccard:.6f}",
                     f"{best_shared_km:.6f}",
                     f"{best_target_only_km:.6f}",
@@ -315,7 +322,9 @@ def main():
             writer.writerow(
                 [
                     "target_id",
+                    "target_route_id",
                     "best_match_id",
+                    "best_match_route_id",
                     "jaccard",
                     "shared_km",
                     "target_only_km",
