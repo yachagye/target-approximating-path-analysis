@@ -14,9 +14,11 @@
 - **지점 간 분석 (Point-to-point):** 출발지와 도착지가 모두 특정 지점인 경우
 - **지점-경계 분석 (Point-to-boundary):** 도착지가 군현 경계 폴리곤인 경우 (예: 사방경계 기록)
 
+목표값은 단일 값 `T` 외에 구간 `[beg, end]`로도 지정할 수 있어, 사료의 거리 기록이 범위로 주어지는 경우에 대응합니다. 경유지를 포함하는 경로에서는 네트워크 위상(bridge·articulation) 판정으로 우회 가능한 구간 왕복(가짜 고리)을 배제하며, 진입로가 유일한 막다른 경유지의 불가피한 왕복은 유지합니다.
+
 이에 더하여 순위 분석, 편차범위 분석, 경로 간·레이어 간 길이 가중 유사도 분석을 통해 경로의 추정 신뢰도와 성격을 정량적으로 평가할 수 있습니다.
 
-This repository implements a GIS-based path analysis model that searches a network for routes most closely matching distances recorded in historical sources. By transforming the objective function from cost minimization (`min f`) to target approximation (`min |f − T|`), recorded values themselves become inputs for the path search.
+This repository implements a GIS-based path analysis model that searches a network for routes most closely matching distances recorded in historical sources. By transforming the objective function from cost minimization (`min f`) to target approximation (`min |f − T|`), recorded values themselves become inputs for the path search. Targets may be given as a single value `T` or as an interval `[beg, end]`, and for routes with intermediate waypoints, avoidable round-trip segments (artificial loops) are excluded by topological tests on the network.
 
 ---
 
@@ -44,7 +46,9 @@ target-approximating-path-analysis/
 └── scripts/
     ├── 01_network_build/      # 네트워크 데이터셋 구축
     │   ├── 라인_네트워크데이터셋_변환_gpkg.py
-    │   └── 네트워크데이터셋_DiGraph_변환_gpkg_pkl.py
+    │   ├── 라인_비용필드_계산.py
+    │   ├── 네트워크데이터셋_DiGraph_변환_gpkg_pkl.py
+    │   └── 그래프_무결성_점검.py
     ├── 02_route_analysis/     # 경로 분석 (기본·순위·편차범위)
     │   ├── 경로분석_point_point.py
     │   ├── 경로분석_point_polygon.py
@@ -89,7 +93,16 @@ python scripts/01_network_build/라인_네트워크데이터셋_변환_gpkg.py
 
 # 1-2. 네트워크 데이터셋(GPKG) → DiGraph 캐시(.pkl)
 python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl.py
+
+# (대안) 기존 라인 레이어의 위상·스키마를 유지한 채 비용 필드만 부여
+python scripts/01_network_build/라인_비용필드_계산.py
+
+# (선택) DiGraph 캐시의 무결성 점검
+python scripts/01_network_build/그래프_무결성_점검.py
 ```
+
+- `라인_비용필드_계산.py`는 네트워크 변환(1-1)의 대안으로, 라인을 분할하지 않고 원본 위상과 스키마를 유지한 채 정점 구간별 경사 계산으로 9개 비용 필드(3차원 거리·시간·에너지)만 부여합니다. 기존 경로 복원 레이어에 비용 정보를 얹어 구간 거리를 산출할 때 사용합니다.
+- `그래프_무결성_점검.py`는 DiGraph 캐시의 약연결요소(WCC) 분포, 자투리 조각의 본체 이격 거리, self loop·영길이 간선 등 변환 부산물을 점검하며, 경로 CSV를 입력하면 경로별 기점·종점의 도달성 검사를 함께 수행합니다.
 
 ### 2단계: 경로 분석 (`02_route_analysis/`)
 
@@ -101,7 +114,11 @@ python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl
 | 순위 분석 (상위 N) | `경로분석_point_point_순위.py` | `경로분석_point_polygon_순위.py` |
 | 편차범위 분석 (±margin) | `경로분석_point_point_편차범위.py` | `경로분석_point_polygon_편차범위.py` |
 
-각 스크립트는 실행 시 분석 유형(거리/시간)과 장애물 적용 여부 등을 사용자가 선택합니다.
+각 스크립트는 실행 시 분석 유형(거리/시간)과 장애물 적용 여부 등을 사용자가 선택합니다. 입력 CSV의 목표값 컬럼(`km_beg`/`km_end` 또는 `hr_beg`/`hr_end`)은 행별로 다음과 같이 분기합니다.
+
+- `beg`만 입력 → 단일 목표값 모드 (`T = beg`, `|비용 − T|` 최소 경로)
+- `beg`·`end` 모두 입력 → 구간 모드 `[beg, end]`
+- `beg` 빈칸 → 목표값 미입력 (최소 비용 경로 `route_min_*`만 산출)
 
 ### 3단계: 유사도 분석 (`03_similarity/`)
 
@@ -115,6 +132,21 @@ python scripts/01_network_build/네트워크데이터셋_DiGraph_변환_gpkg_pkl
 | `레이어_간_경로_구성_비교.py` | 두 개의 경로 GPKG | 요약 CSV + 매칭 CSV |
 
 분석 모델의 구체적 절차와 출력 구조는 [docs/운영_지침.md](docs/운영_지침.md)를 참조하십시오.
+
+---
+
+## 변경 이력 (Changelog)
+
+### v2.0 (2026)
+
+- 경로 분석 6종에 구간 목표값 모드 `[beg, end]` 추가 (단일 목표값 모드와 입력 CSV의 행별 분기)
+- 경유지 포함 경로에 대해 네트워크 위상(bridge·articulation) 기반의 가짜 고리(우회 가능한 구간 왕복) 판정·배제 도입
+- `라인_비용필드_계산.py` 추가: 원본 위상·스키마를 유지한 채 기존 라인 레이어에 비용 필드 부여
+- `그래프_무결성_점검.py` 추가: DiGraph 캐시의 연결성·변환 부산물 점검 및 기점·종점 도달성 검사
+
+### v1.0 (2026)
+
+- 최초 공개: 목표값 근접 경로 분석 모델(지점 간·지점-경계), 순위·편차범위 분석, 경로 간·레이어 간 유사도 분석 스크립트
 
 ---
 
