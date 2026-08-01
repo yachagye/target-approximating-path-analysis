@@ -14,11 +14,11 @@
 - **지점 간 분석 (Point-to-point):** 출발지와 도착지가 모두 특정 지점인 경우
 - **지점-경계 분석 (Point-to-boundary):** 도착지가 군현 경계 폴리곤인 경우 (예: 사방경계 기록)
 
-목표값은 단일 값 `T` 외에 구간 `[beg, end]`로도 지정할 수 있어, 사료의 거리 기록이 범위로 주어지는 경우에 대응합니다. 경유지를 포함하는 경로에서는 네트워크 위상(bridge·articulation) 판정으로 우회 가능한 구간 왕복(가짜 고리)을 배제하며, 진입로가 유일한 막다른 경유지의 불가피한 왕복은 유지합니다.
+목표값은 단일 값 `T` 외에 구간 `[beg, end]`로도 지정할 수 있어, 사료의 거리 기록이 범위로 주어지는 경우에 대응합니다.
 
 이에 더하여 순위 분석, 편차범위 분석, 경로 간·레이어 간 길이 가중 유사도 분석을 통해 경로의 추정 신뢰도와 성격을 정량적으로 평가할 수 있습니다.
 
-This repository implements a GIS-based path analysis model that searches a network for routes most closely matching distances recorded in historical sources. By transforming the objective function from cost minimization (`min f`) to target approximation (`min |f − T|`), recorded values themselves become inputs for the path search. Targets may be given as a single value `T` or as an interval `[beg, end]`, and for routes with intermediate waypoints, avoidable round-trip segments (artificial loops) are excluded by topological tests on the network.
+This repository implements a GIS-based path analysis model that searches a network for routes most closely matching distances recorded in historical sources. By transforming the objective function from cost minimization (`min f`) to target approximation (`min |f − T|`), recorded values themselves become inputs for the path search. Targets may be given as a single value `T` or as an interval `[beg, end]`.
 
 ---
 
