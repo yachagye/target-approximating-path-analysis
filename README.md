@@ -31,6 +31,13 @@ This repository implements a GIS-based path analysis model that searches a netwo
 > Path Analysis Model for Historical GIS: A Case Study of Gwangju in Gyeonggi
 > during the Joseon Dynasty. *THE CHOSON DYNASTY HISTORY ASSOCIATION 117*.
 
+> 양정현 2026. 조선시대 포천과 영평의 도로 관계 기록 분석과 재현.
+> *문화역사지리 38(2)*.
+>
+> Yang, J. 2026. Analysis and Reconstruction of Road Relationship Records
+> of Pocheon and Yeongpyeong in the Joseon Dynasty.
+> *Journal of Cultural and Historical Geography 38(2)*.
+
 ---
 
 ## 저장소 구성
